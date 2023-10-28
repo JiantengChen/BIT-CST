@@ -1,0 +1,7 @@
+{ 
+	"window-width": 420, 
+	"window-height": 420, 
+	"block-size": 20, 
+	"speed": 0.08, 
+	"auto": true 
+}

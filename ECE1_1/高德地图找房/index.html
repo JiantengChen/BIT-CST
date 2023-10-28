@@ -1,0 +1,319 @@
+<html>
+
+<head>
+	<meta charset="utf-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge">
+	<meta name="viewport" content="initial-scale=1.0, user-scalable=no, width=device-width">
+	<title>租房地图</title>
+
+
+	<!-- /* -----------
+		增加Security Code
+		Reffer 安全密钥使用说明： https://lbs.amap.com/api/javascript-api/guide/abc/prepare
+	*/ -->
+	<script type="text/javascript">
+		window._AMapSecurityConfig = {
+			securityJsCode: '6b28aba2e65cb98b7d136c7b4c7c1e6d'
+		}
+	</script>
+
+
+	<link rel="stylesheet" href="http://cache.amap.com/lbs/static/main1119.css" />
+	<link rel="stylesheet" href="http://cache.amap.com/lbs/static/jquery.range.css" />
+	<script src="http://cache.amap.com/lbs/static/jquery-1.9.1.js"></script>
+	<script src="http://cache.amap.com/lbs/static/es5.min.js"></script>
+
+
+	<!-- /* -----------------
+	去除Key, 填充自己分配的Key */ -->
+	<script
+		src="http://webapi.amap.com/maps?v=1.4.15&key=4666313672851a4d3898b164144be2fb&plugin=AMap.ArrivalRange,AMap.Scale,AMap.Geocoder,AMap.Transfer,AMap.Autocomplete"></script>
+
+	<script src="http://cache.amap.com/lbs/static/jquery.range.js"></script>
+
+	<style>
+		.control-panel {
+			position: absolute;
+			top: 30px;
+			right: 20px;
+		}
+
+		.control-entry {
+			width: 280px;
+			background-color: rgba(119, 136, 153, 0.8);
+			font-family: fantasy, sans-serif;
+			text-align: left;
+			color: white;
+			overflow: auto;
+			padding: 10px;
+			margin-bottom: 10px;
+		}
+
+		.control-input {
+			margin-left: 120px;
+		}
+
+		.control-input input[type="text"] {
+			width: 160px;
+		}
+
+		.control-panel label {
+			float: left;
+			width: 120px;
+		}
+
+		/* 路径规划面板 */
+
+		#transfer-panel {
+			position: absolute;
+			background-color: white;
+			max-height: 80%;
+			overflow-y: auto;
+			top: 30px;
+			left: 20px;
+			width: 250px;
+		}
+	</style>
+</head>
+
+<body>
+	<div id="container"></div>
+	<div class="control-panel">
+		<div class="control-entry">
+			<label>选择工作地点：</label>
+			<div class="control-input">
+				<input id="work-location" type="text">
+			</div>
+		</div>
+		<div class="control-entry">
+			<label>选择通勤方式：</label>
+			<div class="control-input">
+				<input type="radio" name="vehicle" value="SUBWAY,BUS" onClick="takeBus(this)" checked /> 公交+地铁
+				<input type="radio" name="vehicle" value="SUBWAY" onClick="takeSubway(this)" /> 地铁
+			</div>
+		</div>
+		<div class="control-entry">
+			<label>导入房源文件：</label>
+			<div class="control-input">
+				<input type="file" name="file" onChange="importRentInfo(this)" />
+			</div>
+		</div>
+	</div>
+	<div id="transfer-panel"></div>
+	<script>
+
+
+		/*  ---------------------------
+			生成AMap.Map对象，类型"container", 对象名 map
+			地图初始化城市和地图的一些属性
+		*/
+		var map = new AMap.Map("container", {
+			resizeEnable: true,
+			zoomEnable: true,
+			center: [116.315, 39.960],  // 将地图中心设置到北京理工大学
+			zoom: 17  // 设置放大等级
+		});
+
+
+
+
+
+		/* ---------------
+			生成AMap.Scale控件，并显示在map容器中
+			为map添加标尺
+			Reffer: https://lbs.amap.com/api/javascript-api/guide/abc/plugins
+		*/
+		// 添加比例尺插件
+		var scale = new AMap.Scale();
+		map.addControl(scale);
+
+
+		var arrivalRange = new AMap.ArrivalRange(); //公交到达圈
+		var x, y, t, vehicle = "SUBWAY,BUS"; //经纬度和交通方式
+		var workAddress, workMarker; //工作地点和工作标记
+		var rentMarkerArray = []; //房源标记队列
+		var polygonArray = []; //多边形队列，存储公交到达的计算结果
+		var amapTransfer; //路径规划
+
+		// 信息窗体对象
+		var infoWindow = new AMap.InfoWindow({
+			offset: new AMap.Pixel(0, -30)
+		});
+
+		// 地址自动补全对象
+		var auto = new AMap.Autocomplete({
+			input: "work-location"
+		});
+
+		// 在选择完地址后自动调用worklocationselected方法
+		AMap.event.addListener(auto, "select", workLocationSelected);
+
+
+		function takeBus(radio) {
+			vehicle = radio.value;
+			loadWorkLocation()
+		}
+
+		function takeSubway(radio) {
+			vehicle = radio.value;
+			loadWorkLocation()
+		}
+
+		// 触发房源信息
+		function importRentInfo(fileInfo) {
+			var file = fileInfo.files[0].name;
+			loadRentLocationByFile(file);
+		}
+
+		function workLocationSelected(e) {
+			workAddress = e.poi.name;
+			loadWorkLocation(); //调用加载1小时内到达的区域方法
+		}
+
+		// 工作地点标记（标记为红色）
+
+		function loadWorkMarker(x, y, locationName) {
+			/* ----------------------
+				添加工作地点标记 Marker
+				Refer: https://lbs.amap.com/api/javascript-api/guide/overlays/marker
+			*/
+			workMarker = new AMap.Marker({
+				map: map,
+				title: locationName,
+				icon: 'http://webapi.amap.com/theme/v1.3/markers/n/mark_r.png',
+				position: [x, y]
+
+			});
+		}
+
+
+		// 加载范围域
+		function loadWorkRange(x, y, t, color, v) {
+			arrivalRange.search([x, y], t, function (status, result) {
+				if (result.bounds) {
+					for (var i = 0; i < result.bounds.length; i++) {
+						var polygon = new AMap.Polygon({
+							map: map,
+							fillColor: color,
+							fillOpacity: "0.4",
+							strokeColor: color,
+							strokeOpacity: "0.8",
+							strokeWeight: 1
+						});
+						polygon.setPath(result.bounds[i]);
+						polygonArray.push(polygon);
+					}
+				}
+			}, {
+				policy: v
+			});
+		}
+
+		function addMarkerByAddress(address, count, info) {
+			var geocoder = new AMap.Geocoder({
+				city: "北京",
+				radius: 1000
+			});
+			geocoder.getLocation(address, function (status, result) {
+				if (status === "complete" && result.info === 'OK') {
+					var geocode = result.geocodes[0];
+					rentMarker = new AMap.Marker({
+						map: map,
+						title: address,
+						icon: 'http://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
+						position: [geocode.location.getLng(), geocode.location.getLat()]
+					});
+					rentMarkerArray.push(rentMarker);
+					/* -------------
+						自定义content，显示房源标签内容
+					*/
+					rentMarker.content = "<div>房源数量： " + count + "</div><div>区块：<a target = '_blank' href='https://bj.lianjia.com/zufang/rs" + address + "'>" + address + "</a><div><div>房源相关信息：" + "</div><div>" + info + "</div>"
+					rentMarker.on('click', function (e) {		// generate path to target
+						infoWindow.setContent(e.target.content);
+						infoWindow.open(map, e.target.getPosition());
+						if (amapTransfer) amapTransfer.clear();
+						amapTransfer = new AMap.Transfer({
+							map: map,
+							policy: AMap.TransferPolicy.LEAST_TIME,
+							city: "北京市",
+							panel: 'transfer-panel'
+						});
+						amapTransfer.search([{
+							keyword: workAddress
+						}, {
+							keyword: address
+						}], function (status, result) { })
+					});
+				}
+			})
+		}
+
+		function delWorkLocation() {
+			if (polygonArray) map.remove(polygonArray);
+			if (workMarker) map.remove(workMarker);
+			polygonArray = [];
+		}
+
+		function delRentLocation() {
+			if (rentMarkerArray) map.remove(rentMarkerArray);
+			rentMarkerArray = [];
+		}
+
+		function loadWorkLocation() {
+			delWorkLocation();
+			var geocoder = new AMap.Geocoder({
+				city: "北京",
+				radius: 1000
+			});
+
+			geocoder.getLocation(workAddress, function (status, result) {
+				if (status === "complete" && result.info === 'OK') {
+					var geocode = result.geocodes[0];
+					x = geocode.location.getLng();
+					y = geocode.location.getLat();
+					loadWorkMarker(x, y);
+					loadWorkRange(x, y, 60, "#3f67a5", vehicle);
+					map.setZoomAndCenter(12, [x, y]);
+				}
+			})
+		}
+
+
+		// 加载房源位置
+
+		function loadRentLocationByFile(fileName) {
+			delRentLocation();
+
+
+			/* ----------------
+				读取CSV文件，将房源位置进行整合，并调用 addMarkerByAddress 函数，完成房源标记
+				可以改写接口，以优化标签信息
+			*/
+			var rent_locations = new Set();
+			var rent_count = new Array();
+			var rent_info = new Array();
+			$.get(fileName, function (data) {
+				data = data.split("\n");
+				data.forEach(function (item, index) {
+					var item_splited = item.split(",");
+					if (rent_locations.has(item_splited[1])) {
+						rent_count[item_splited[1]]++;
+						rent_info[item_splited[1]] += item_splited[0] + '；';
+					}
+					else {
+						rent_locations.add(item_splited[1]);
+						rent_info[item_splited[1]] = item_splited[0] + '；';
+						rent_count[item_splited[1]] = 1;
+					}
+				});
+				rent_locations.forEach(function (element, index) {
+					addMarkerByAddress(element, rent_count[element], rent_info[element]); //为房源添加标记
+				});
+			});
+
+
+		}
+	</script>
+</body>
+
+</html>

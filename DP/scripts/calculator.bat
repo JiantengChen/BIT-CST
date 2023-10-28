@@ -1,0 +1,1 @@
+python .\src\run_calculator.py -t 0
